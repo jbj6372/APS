@@ -390,6 +390,35 @@ void ModulateWeights(Tensor *conv_weight, Tensor *style_a, Tensor *weight_a, flo
   }
 }
 
+__global__ void ModulateWeightsKernel(float *conv_weight, float *style_a, float *weight_a, float scale, size_t N, size_t out_C, size_t in_C, size_t kernel_size) {
+  
+  for (size_t n = 0; n < N; n++) {
+    for (size_t oc = 0; oc < out_C; oc++) {
+      for (size_t ic = 0; ic < in_C; ic++) {
+        for (size_t k = 0; k < kernel_size * kernel_size; k++) {
+          size_t idx = oc * in_C * kernel_size * kernel_size + ic * kernel_size * kernel_size + k;
+          weight_a->buf[n * out_C * in_C * kernel_size * kernel_size + idx] = conv_weight->buf[idx] * style_a->buf[n * in_C + ic] * scale;
+        }
+      }
+    }
+  }
+}
+
+void ModulateWeights_gpu(Tensor *conv_weight, Tensor *style_a, Tensor *weight_a, float scale) {
+  size_t N = style_a->shape[0];
+  size_t out_C = conv_weight->shape[0];
+  size_t in_C = conv_weight->shape[1];
+  size_t kernel_size = conv_weight->shape[2];
+
+  conv_weight->to_gpu();
+  weight_a->to_gpu();
+
+  dim3 gridDim(1);
+  dim3 blockDim(1);
+
+  ModulateWeightsKernel<<<gridDim, blockDim>>>(conv_weight->gpu_buf, style_a->gpu_buf, weight_a->gpu_buf, scale, N, out_C, in_C, kernel_size);
+}
+
 /*
  * Compute Demodulation Factors
  * Computes demodulation factors based on the modulated weights.
@@ -447,7 +476,9 @@ void ModulatedConv2d(Tensor *input, Tensor *style, Tensor *modulate_weight, Tens
   int in_C = input->shape[1];
   int kernel_size = conv_weight->shape[2];
 
-  Linear(style, modulate_weight, modulate_bias, style_a, 1.0f);
+  style->to_gpu();
+  Linear_gpu(style, modulate_weight, modulate_bias, style_a, 1.0f);
+  style_a->to_cpu();
 
   float scale = 1 / sqrtf((float) (in_C * kernel_size * kernel_size));
 
